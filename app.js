@@ -18,10 +18,13 @@ const DEFAULT_PLATFORMS = [
 // "想去的地方"：用待办类的结构，状态是 想去 / 去过了，再加自定义状态（比如"在计划"）
 const PLACES_BOARD = () => ({ id: 'places', name: '想去的地方', type: 'todo', done: '去过了', undone: '想去', icon: '📍' });
 
+// 购物分类（商品种类）的默认值，用户可以在"编辑板块"里增删改
+const DEFAULT_KINDS = ['电子数码', '摄影器材', '配件', '衣物', '书籍', '日用品', '娱乐', '其他'];
+
 function defaultState() {
   return {
     boards: [
-      { id: 'shop', name: '购物', type: 'shop', done: '已购买', undone: '未购买', categories: ['必需', '非必需'] },
+      { id: 'shop', name: '购物', type: 'shop', done: '已购买', undone: '未购买', categories: ['必需', '非必需'], kinds: [...DEFAULT_KINDS] },
       { id: 'todo', name: '待办', type: 'todo', done: '已完成', undone: '未完成' },
       PLACES_BOARD(),
     ],
@@ -44,13 +47,23 @@ function load() {
           if (!s.boards.some(b => b.id === 'places')) s.boards.push(PLACES_BOARD());
           s.seeded.push('places');
         }
+        // 老的购物板块补上默认分类
+        for (const b of s.boards) if (b.type === 'shop' && !Array.isArray(b.kinds)) b.kinds = [...DEFAULT_KINDS];
         return s;
       }
     }
   } catch (e) { /* 读取失败就用默认数据 */ }
   return defaultState();
 }
-let state = load();
+// 新增字段的默认值（老数据打开时补上，不改动已有内容）
+function fixState(s) {
+  s.lastCurrency = s.lastCurrency || 'CNY';
+  s.calc = s.calc && Array.isArray(s.calc.sel) ? s.calc : { sel: [], open: false };
+  s.shopFilter = s.shopFilter || {};
+  return s;
+}
+let state = fixState(load());
+let calcMode = false; // "选择计算"模式只在这次打开期间有效
 
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); }
@@ -113,6 +126,7 @@ function render() {
   state.filters = state.filters || {};
   renderTabs();
   renderList();
+  renderCalc();
   const n = (state.trash || []).length;
   $('#trashBtn').innerHTML = `🗑${n ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : ''}`;
 }
@@ -145,12 +159,60 @@ function itemRow(it, showBoard) {
     if (p?.offline && it.location) meta.push(`<span class="tag">📍${esc(it.location)}</span>`);
   }
   if (it.status === 'custom' && it.customStatus) meta.unshift(`<span class="tag custom">${esc(it.customStatus)}</span>`);
+  if (b?.type === 'shop' && it.kind) meta.push(`<span class="tag kind">${esc(it.kind)}</span>`);
   if (it.note) meta.push(`<span class="note">${esc(it.note.split('\n')[0])}</span>`);
-  return `<div class="item${done ? ' done' : ''}" data-id="${it.id}">
+  const shop = b?.type === 'shop';
+  const picked = shop && state.calc.sel.includes(it.id);
+  const price = shop && Number.isInteger(it.price)
+    ? `<span class="price">${fmtMoney(it.price, it.currency || state.lastCurrency)}${(it.qty || 1) > 1 ? `<small>×${it.qty}</small>` : ''}</span>` : '';
+  return `<div class="item${done ? ' done' : ''}${picked ? ' picked' : ''}" data-id="${it.id}">
     <button class="check${done ? ' on' : ''}" data-act="toggle" aria-label="${done ? '标为未完成' : '标为完成'}">${done ? '✓' : ''}</button>
     <div class="body"><div class="title">${esc(it.title)}</div>${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}</div>
-    ${b?.type === 'shop' ? platBadge(platform(it.platform)) : ''}
+    ${price}${shop ? platBadge(platform(it.platform)) : ''}
+    ${shop && calcMode ? `<button class="selbox${picked ? ' on' : ''}" data-act="sel" aria-label="${picked ? '不参与计算' : '参与计算'}">${picked ? '✓' : ''}</button>` : ''}
   </div>`;
+}
+
+/* 购物板块的筛选：分类 + 购买状态（直接读取原来的勾选状态，不另存一套） */
+const NO_KIND = '__none';
+function shopFilterOf(b) {
+  const f = state.shopFilter[b.id] || {};
+  let kind = f.kind || 'all';
+  if (kind !== 'all' && kind !== NO_KIND && !(b.kinds || []).includes(kind)) kind = 'all';
+  const status = ['all', 'undone', 'done', 'custom'].includes(f.status) ? f.status : 'all';
+  return { kind, status };
+}
+const statusMatch = (i, s) => s === 'all' || (s === 'undone' ? i.status !== 'done' : i.status === s);
+const kindMatch = (i, k) => k === 'all' || (k === NO_KIND ? !i.kind : i.kind === k);
+
+function renderShopList(el, b, all) {
+  const f = shopFilterOf(b);
+  const list = all.filter(i => kindMatch(i, f.kind) && statusMatch(i, f.status));
+  const inKind = all.filter(i => kindMatch(i, f.kind));
+  const kinds = b.kinds || [];
+  const kindOpts = [['all', '全部分类'], ...kinds.map(k => [k, k]), [NO_KIND, '未分类']].map(([v, l]) => {
+    const n = all.filter(i => kindMatch(i, v)).length;
+    return `<option value="${esc(v)}"${v === f.kind ? ' selected' : ''}>${esc(l)}（${n}）</option>`;
+  }).join('');
+  const stOpts = [['all', '全部状态'], ['undone', b.undone], ['done', b.done], ['custom', '自定义状态']].map(([v, l]) =>
+    `<option value="${v}"${v === f.status ? ' selected' : ''}>${esc(l)}（${inKind.filter(i => statusMatch(i, v)).length}）</option>`).join('');
+
+  el.innerHTML = `<div class="board-head"><span>${all.length} 项</span><span><button class="link" id="dataBtn">备份</button><button class="link" id="editBoard">编辑板块</button></span></div>
+    <div class="toolbar">
+      <label class="pill${f.kind !== 'all' ? ' on' : ''}"><select id="kindSel" aria-label="购物分类">${kindOpts}</select></label>
+      <label class="pill${f.status !== 'all' ? ' on' : ''}"><select id="statusSel" aria-label="购买状态">${stOpts}</select></label>
+      <button type="button" class="pill calc-toggle${calcMode ? ' on' : ''}" id="calcMode">${calcMode ? '完成选择' : '🧮 计算'}</button>
+    </div>
+    ${calcMode ? `<div class="hint">点商品选它参与金额计算（右边方框）。左边圆圈还是"${esc(b.done)}"，两个互不影响。</div>` : ''}` +
+    (list.length ? list.map(i => itemRow(i)).join('')
+      : all.length ? `<div class="empty">这个筛选下没有商品</div>`
+      : `<div class="empty"><b>＋</b>点右下角的按钮添加事项</div>`);
+  $('#editBoard').onclick = () => editBoard(b);
+  $('#dataBtn').onclick = dataSheet;
+  const setF = patch => { state.shopFilter[b.id] = { ...f, ...patch }; save(); renderList(); };
+  $('#kindSel').onchange = e => setF({ kind: e.target.value });
+  $('#statusSel').onchange = e => setF({ status: e.target.value });
+  $('#calcMode').onclick = () => { calcMode = !calcMode; renderList(); };
 }
 
 function renderList() {
@@ -158,6 +220,7 @@ function renderList() {
   const b = board(state.current);
   const all = state.items.filter(i => i.boardId === b.id)
     .sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
+  if (b.type === 'shop') return renderShopList(el, b, all);
   // 状态筛选：全部 / 未完成 / 已完成 / 自定义状态
   const opts = [{ value: 'all', label: '全部' }, { value: 'undone', label: b.undone }, { value: 'done', label: b.done }, { value: 'custom', label: '自定义状态' }];
   let f = state.filters[b.id] || 'all';
@@ -197,6 +260,11 @@ $('#list').addEventListener('click', e => {
       () => { Object.assign(it, prev); save(); render(); });
     return;
   }
+  // 选择计算：只改"参与计算"的选择，不碰完成状态
+  if (e.target.closest('[data-act="sel"]') || (calcMode && board(it.boardId)?.type === 'shop')) {
+    toggleCalc(it.id);
+    return;
+  }
   editItem(it);
 });
 
@@ -224,11 +292,24 @@ function editItem(src) {
   fields += `<div class="field"><span class="lbl">状态</span>${chips('status', [{ value: 'undone', label: b.undone }, { value: 'done', label: b.done }, { value: 'custom', label: '自定义' }], it.status || 'undone')}
     <input class="input" name="customStatus" value="${esc(it.customStatus)}" placeholder="${b.type === 'shop' ? '比如：等降价、已下单在路上' : '写一下现在的进度，比如：等对方回复'}" style="margin-top:8px;${it.status === 'custom' ? '' : 'display:none'}"></div>`;
   if (b.type === 'shop') {
-    fields += `<div class="field"><span class="lbl">分类</span>${chips('category', (b.categories || []).map(c => ({ value: c, label: c })), it.category || '').replace('class="chips"', 'class="chips" data-toggle="1"')}</div>`;
+    fields += `<div class="field"><label>购物分类</label><select class="input" name="kind">
+      <option value="">未分类</option>${(b.kinds || []).map(k => `<option${k === it.kind ? ' selected' : ''}>${esc(k)}</option>`).join('')}
+      ${it.kind && !(b.kinds || []).includes(it.kind) ? `<option selected>${esc(it.kind)}</option>` : ''}</select></div>`;
+    fields += `<div class="field"><span class="lbl">必要程度</span>${chips('category', (b.categories || []).map(c => ({ value: c, label: c })), it.category || '').replace('class="chips"', 'class="chips" data-toggle="1"')}</div>`;
     fields += `<div class="field"><span class="lbl">在哪个平台</span>${chips('platform', state.platforms.map(p => ({ value: p.id, html: platBadge(p) + esc(p.name) })), it.platform || '').replace('class="chips"', 'class="chips" data-toggle="1"')}
       <input class="input" name="location" value="${esc(it.location)}" placeholder="线下位置，比如：楼下超市" style="margin-top:8px;${platform(it.platform)?.offline ? '' : 'display:none'}"></div>`;
   }
-  fields += `<div class="field"><label>备注</label><textarea class="input" name="note" placeholder="可选">${esc(it.note)}</textarea></div>`;
+  fields += `<div class="field"><label>备注</label><textarea class="input" name="note" placeholder="可选">${esc(it.note)}</textarea>`;
+  if (b.type === 'shop') {
+    // 价格是可选的：不填也能保存；不会从备注里猜价格
+    const cur = it.currency || state.lastCurrency;
+    fields += `<div class="row price-row">
+      <input class="input" name="price" inputmode="decimal" placeholder="价格（可选）" value="${Number.isInteger(it.price) ? moneyText(it.price).replace(/,/g, '') : ''}" autocomplete="off">
+      <select class="input" name="currency" aria-label="币种">${CURRENCIES.map(c => `<option value="${c.code}"${c.code === cur ? ' selected' : ''}>${c.code}</option>`).join('')}</select>
+      <label class="qty">×<input class="input" name="qty" type="number" min="1" step="1" inputmode="numeric" value="${it.qty || 1}" aria-label="数量"></label>
+    </div>`;
+  }
+  fields += `</div>`;
   if (state.boards.filter(x => x.type === b.type).length > 1) {
     fields += `<div class="field"><label>所属板块</label><select class="input" name="boardId">${state.boards.filter(x => x.type === b.type).map(x =>
       `<option value="${x.id}"${x.id === b.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>`;
@@ -260,6 +341,13 @@ function editItem(src) {
         const out = { ...it, title, note: f.note.value.trim() };
         out.status = val('status') || 'undone';
         if (b.type === 'shop') {
+          const p = parseMoney(f.price.value);
+          if (Number.isNaN(p)) { e.preventDefault(); toast('价格只能填数字，最多两位小数'); f.price.focus(); return; }
+          out.price = p;                       // null = 没填价格
+          out.currency = f.currency.value;
+          out.qty = Math.max(1, Math.floor(Number(f.qty.value)) || 1);
+          state.lastCurrency = out.currency;  // 下次默认用这次选的币种
+          out.kind = f.kind.value;
           out.category = val('category');
           out.platform = val('platform');
           out.location = platform(out.platform)?.offline ? f.location.value.trim() : '';
@@ -287,6 +375,9 @@ function editBoard(src) {
   const isNew = !src;
   const b = src ? JSON.parse(JSON.stringify(src)) : { id: null, name: '', type: 'todo', done: '已完成', undone: '未完成', categories: ['必需', '非必需'] };
   const plats = state.platforms.map(p => ({ ...p }));
+  if (!b.kinds) b.kinds = [...DEFAULT_KINDS];
+  const kindRename = {};   // 旧名 -> 新名（保存时同步到商品上）
+  const kindRemoved = new Set();
 
   const draw = () => {
     const shop = b.type === 'shop';
@@ -296,7 +387,10 @@ function editBoard(src) {
       <div class="field"><span class="lbl">状态文字</span><div class="row">
         <input class="input" name="undone" value="${esc(b.undone)}" placeholder="未完成时">
         <input class="input" name="done" value="${esc(b.done)}" placeholder="完成时"></div></div>
-      ${shop ? `<div class="field"><span class="lbl">分类（第一个会高亮显示）</span>
+      ${shop ? `<div class="field"><span class="lbl">购物分类（点名字可以改名）</span>
+        <div class="chips" id="kinds">${(b.kinds || []).map((k, i) => `<span class="chip"><button type="button" class="link rn" data-i="${i}">${esc(k)}</button><button type="button" class="link x" data-i="${i}" aria-label="删除">×</button></span>`).join('')}</div>
+        <div class="row" style="margin-top:8px"><input class="input" id="newKind" placeholder="新分类，比如：运动户外"><button type="button" class="btn" id="addKind">添加</button></div></div>
+      <div class="field"><span class="lbl">必要程度（第一个会高亮显示）</span>
         <div class="chips" id="cats">${(b.categories || []).map((c, i) => `<span class="chip">${esc(c)}<button type="button" class="link x" data-i="${i}" aria-label="删除">×</button></span>`).join('')}</div>
         <div class="row" style="margin-top:8px"><input class="input" id="newCat" placeholder="新分类"><button type="button" class="btn" id="addCat">添加</button></div></div>
       <div class="field"><span class="lbl">电商平台（所有购物板块共用）</span>
@@ -312,6 +406,24 @@ function editBoard(src) {
           if (v === 'shop') { b.done = '已购买'; b.undone = '未购买'; } else { b.done = '已完成'; b.undone = '未完成'; }
           draw();
         });
+        f.querySelectorAll('#kinds .x').forEach(x => x.onclick = () => {
+          keep(); const k = b.kinds.splice(+x.dataset.i, 1)[0];
+          const orig = Object.keys(kindRename).find(o => kindRename[o] === k) || k;
+          kindRemoved.add(orig); delete kindRename[orig]; draw();
+        });
+        f.querySelectorAll('#kinds .rn').forEach(x => x.onclick = () => {
+          const i = +x.dataset.i, old = b.kinds[i];
+          const v = (prompt('分类改名为：', old) || '').trim();
+          if (!v || v === old || b.kinds.includes(v)) return;
+          keep(); b.kinds[i] = v;
+          const orig = Object.keys(kindRename).find(o => kindRename[o] === old) || old;
+          kindRename[orig] = v; draw();
+        });
+        const addKind = f.querySelector('#addKind');
+        if (addKind) addKind.onclick = () => {
+          const v = f.querySelector('#newKind').value.trim();
+          if (v && !b.kinds.includes(v)) { keep(); b.kinds.push(v); draw(); }
+        };
         f.querySelectorAll('#cats .x').forEach(x => x.onclick = () => { keep(); b.categories.splice(+x.dataset.i, 1); draw(); });
         f.querySelectorAll('#plats .x').forEach(x => x.onclick = () => { keep(); plats.splice(+x.dataset.i, 1); draw(); });
         const addCat = f.querySelector('#addCat');
@@ -342,9 +454,17 @@ function editBoard(src) {
           if (!b.name) { e.preventDefault(); f.name.focus(); return; }
           b.done = b.done.trim() || (b.type === 'shop' ? '已购买' : '已完成');
           b.undone = b.undone.trim() || (b.type === 'shop' ? '未购买' : '未完成');
-          if (b.type !== 'shop') delete b.categories;
+          if (b.type !== 'shop') { delete b.categories; delete b.kinds; }
           if (isNew) { b.id = uid(); state.boards.push(b); state.current = b.id; }
-          else Object.assign(board(b.id), b);
+          else {
+            Object.assign(board(b.id), b);
+            // 分类改名 / 删除，同步到这个板块的商品（删除的分类变成"未分类"，商品本身不动）
+            for (const i of state.items) {
+              if (i.boardId !== b.id || !i.kind) continue;
+              if (kindRename[i.kind]) i.kind = kindRename[i.kind];
+              else if (kindRemoved.has(i.kind)) i.kind = '';
+            }
+          }
           if (b.type === 'shop') state.platforms = plats;
           save(); render();
         });
@@ -352,6 +472,122 @@ function editBoard(src) {
   };
   draw();
 }
+
+/* ========== 金额计算：独立的选择，和"已购买"勾选完全分开 ========== */
+function toggleCalc(id) {
+  const s = state.calc.sel;
+  const i = s.indexOf(id);
+  if (i >= 0) s.splice(i, 1); else s.push(id);
+  save(); renderList(); renderCalc();
+}
+
+function calcSummary(display) {
+  const items = state.calc.sel.map(id => state.items.find(i => i.id === id)).filter(Boolean);
+  const priced = items.filter(i => Number.isInteger(i.price));
+  const lines = priced.map(i => {
+    const cur = i.currency || state.lastCurrency;
+    const amount = i.price * (i.qty || 1);          // 整数"分"
+    return { it: i, cur, amount, conv: convertCents(amount, cur, display) };
+  });
+  const byCur = {};
+  for (const l of lines) byCur[l.cur] = (byCur[l.cur] || 0) + l.amount;
+  const curs = Object.keys(byCur);
+  const canTotal = lines.every(l => l.conv !== null);
+  const total = canTotal ? lines.reduce((s, l) => s + l.conv, 0) : null;
+  return { items, lines, unpriced: items.length - priced.length, byCur, curs, total, needRates: curs.some(c => c !== display) };
+}
+
+function renderCalc() {
+  const el = $('#calc');
+  // 只保留还存在的商品
+  const alive = state.calc.sel.filter(id => state.items.some(i => i.id === id));
+  if (alive.length !== state.calc.sel.length) { state.calc.sel = alive; save(); }
+  const onShop = board(state.current)?.type === 'shop';
+  if (!alive.length || !onShop) {
+    el.hidden = true;
+    document.documentElement.style.setProperty('--calc-h', '0px');
+    return;
+  }
+  const display = state.calc.currency || 'CNY';
+  const s = calcSummary(display);
+  if (s.needRates && !rates.live && !rates.loading && navigator.onLine) refreshRates().then(renderCalc);
+
+  const totalText = s.lines.length === 0 ? '—'
+    : s.total !== null ? fmtMoney(s.total, display)
+    : s.curs.map(c => fmtMoney(s.byCur[c], c)).join(' + ');
+  const open = !!state.calc.open;
+  el.hidden = false;
+  el.className = 'calc' + (open ? ' open' : '');
+  el.innerHTML = `
+    <div class="calc-handle" id="calcHandle" role="button" tabindex="0" aria-label="${open ? '收起' : '展开'}计算器">
+      <span class="grip"></span>
+      <div class="calc-bar">
+        <span>已选 <b>${s.items.length}</b> 件${s.unpriced ? `<small class="warn">（${s.unpriced} 件未标价）</small>` : ''}</span>
+        <span class="calc-total">${s.total === null && s.lines.length ? '' : '合计 '}<b>${totalText}</b> <span class="chev">${open ? '▾' : '▴'}</span></span>
+      </div>
+    </div>
+    ${open ? `<div class="calc-body">
+      <div class="calc-opts">
+        <label>合计显示为 <select id="calcCur">${CURRENCIES.map(c => `<option value="${c.code}"${c.code === display ? ' selected' : ''}>${c.code} ${c.name}</option>`).join('')}</select></label>
+        ${s.needRates ? `<span class="rate${rates.live ? '' : ' stale'}">${esc(rateStatusText())}</span>` : ''}
+      </div>
+      ${s.total === null && s.lines.length ? `<div class="calc-note">没有可用的汇率，不同币种没法直接相加，下面分别列出各币种小计。</div>` : ''}
+      ${s.curs.length > 1 || (s.curs.length === 1 && s.curs[0] !== display) ? `<div class="calc-subs">${s.curs.map(c => `<span>${c} 小计 ${fmtMoney(s.byCur[c], c)}</span>`).join('')}</div>` : ''}
+      <div class="calc-lines">${s.items.map(i => {
+        const l = s.lines.find(x => x.it === i);
+        const right = l ? `${fmtMoney(l.amount, l.cur)}${l.cur !== display && l.conv !== null ? `<small>≈ ${fmtMoney(l.conv, display)}</small>` : ''}`
+          : `<small class="warn">未标价</small>`;
+        return `<div class="calc-line" data-id="${i.id}">
+          <span class="t">${esc(i.title)}${(i.qty || 1) > 1 && l ? `<small> ${fmtMoney(i.price, l.cur)}×${i.qty}</small>` : ''}</span>
+          <span class="a">${right}</span>
+          <button type="button" class="link x" data-act="unsel" aria-label="不参与计算">×</button></div>`;
+      }).join('')}</div>
+      <div class="calc-actions">
+        <button type="button" class="btn" id="calcClear">取消全部选择</button>
+        ${calcMode ? '' : '<button type="button" class="btn" id="calcMore">继续选择</button>'}
+        <button type="button" class="btn primary" id="calcFold">收起</button>
+      </div>
+    </div>` : ''}`;
+
+  const setOpen = v => { state.calc.open = v; save(); renderCalc(); };
+  bindDrag($('#calcHandle'), () => setOpen(!open), dy => { if (dy > 0 && open) setOpen(false); if (dy < 0 && !open) setOpen(true); });
+  $('#calcHandle').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open); } };
+  if (open) {
+    $('#calcCur').onchange = e => { state.calc.currency = e.target.value; save(); renderCalc(); };
+    $('#calcFold').onclick = () => setOpen(false);
+    $('#calcClear').onclick = () => {
+      const prev = state.calc.sel.slice();
+      state.calc.sel = []; save(); renderList(); renderCalc();
+      toast('已取消全部选择', () => { state.calc.sel = prev; save(); renderList(); renderCalc(); });
+    };
+    const more = $('#calcMore');
+    if (more) more.onclick = () => { calcMode = true; setOpen(false); renderList(); };
+    el.querySelectorAll('[data-act="unsel"]').forEach(x => x.onclick = () => toggleCalc(x.closest('.calc-line').dataset.id));
+  }
+  // 让右下角的添加按钮和回收站浮在计算器上面，不被挡住
+  document.documentElement.style.setProperty('--calc-h', el.offsetHeight + 'px');
+}
+
+// 拖动把手：向下拖收起、向上拖展开；轻点切换。手指和鼠标都能用
+function bindDrag(handle, onTap, onSwipe) {
+  let y0 = null, moved = 0;
+  handle.addEventListener('pointerdown', e => { y0 = e.clientY; moved = 0; handle.setPointerCapture(e.pointerId); });
+  handle.addEventListener('pointermove', e => {
+    if (y0 === null) return;
+    moved = e.clientY - y0;
+    handle.parentElement.style.transform = moved > 0 ? `translateY(${Math.min(moved, 120)}px)` : '';
+  });
+  const end = () => {
+    if (y0 === null) return;
+    handle.parentElement.style.transform = '';
+    const dy = moved; y0 = null;
+    if (Math.abs(dy) < 8) onTap(); else if (Math.abs(dy) > 30) onSwipe(dy);
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', () => { y0 = null; handle.parentElement.style.transform = ''; });
+}
+
+window.addEventListener('online', () => { if (state.calc.sel.length) refreshRates(true).then(renderCalc); });
 
 /* ========== 回收站：删除的事项先放这里，可以恢复 ========== */
 function trashItems(ids) {
@@ -463,7 +699,13 @@ function dataSheet() {
 
 function mergeData(d) {
   const r = { items: 0, boards: 0 };
-  for (const b of d.boards) if (b && b.id && !board(b.id)) { state.boards.push(b); r.boards++; }
+  for (const b of d.boards) {
+    if (!b || !b.id) continue;
+    const mine = board(b.id);
+    if (!mine) { state.boards.push(b); r.boards++; continue; }
+    // 同一个购物板块：把对方新增的分类也合并进来
+    if (mine.type === 'shop' && Array.isArray(b.kinds)) mine.kinds = [...new Set([...(mine.kinds || []), ...b.kinds])];
+  }
   for (const p of d.platforms || []) if (p && p.id && !platform(p.id)) state.platforms.push(p);
   const have = new Set(state.items.map(i => i.id));
   for (const i of d.items) if (i && i.id && !have.has(i.id) && board(i.boardId)) { state.items.push(i); r.items++; }
@@ -515,7 +757,7 @@ render();
 checkImport();
 
 // 别的标签页改了数据时同步过来
-window.addEventListener('storage', e => { if (e.key === KEY) { state = load(); render(); } });
+window.addEventListener('storage', e => { if (e.key === KEY) { state = fixState(load()); render(); } });
 
 // 离线支持
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

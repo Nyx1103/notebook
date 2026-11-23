@@ -109,9 +109,81 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 @media (min-width: 800px) { .fab { right: calc(50% - 380px + 20px); } }
 
+/* 购物：筛选工具条 */
+.toolbar { display: flex; gap: 8px; margin: 0 0 12px; overflow-x: auto; scrollbar-width: none; }
+.toolbar::-webkit-scrollbar { display: none; }
+.pill {
+  flex: none; position: relative; display: inline-flex; align-items: center;
+  border: 1px solid var(--line); background: var(--card); border-radius: 999px;
+  font-size: 14px; cursor: pointer; padding: 0;
+}
+.pill.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.pill select {
+  appearance: none; -webkit-appearance: none; border: 0; background: transparent; color: inherit;
+  padding: 6px 22px 6px 11px; font-size: 14px; cursor: pointer; outline: none;
+}
+.pill::after { content: "▾"; position: absolute; right: 9px; pointer-events: none; font-size: 11px; opacity: .7; }
+.pill.calc-toggle { padding: 6px 12px; }
+.pill.calc-toggle::after { content: none; }
+.hint { font-size: 12px; color: var(--muted); margin: -4px 2px 10px; }
+
+.price { flex: none; font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price small { color: var(--muted); margin-left: 2px; }
+.item.done .price { color: var(--muted); }
+.tag.kind { color: var(--muted); }
+.selbox {
+  flex: none; width: 24px; height: 24px; border-radius: 6px; border: 2px solid var(--accent);
+  background: transparent; color: #fff; cursor: pointer; padding: 0; font-size: 13px;
+  display: grid; place-items: center;
+}
+.selbox.on { background: var(--accent); }
+.item.picked { border-color: var(--accent); }
+
+.price-row { margin-top: 8px; align-items: center; }
+.price-row select { flex: none; width: 84px; }
+.price-row .qty { flex: none; display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.price-row .qty input { width: 64px; }
+
+/* 底部浮动计算器 */
+.calc {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 8;
+  margin: 0 auto; max-width: 760px;
+  background: var(--card); border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 16px 16px 0 0; box-shadow: 0 -6px 20px rgba(0,0,0,.10);
+  padding-bottom: env(safe-area-inset-bottom);
+  transition: transform .15s ease;
+}
+.calc[hidden] { display: none; }
+.calc-handle { touch-action: none; cursor: grab; user-select: none; padding: 6px 16px 10px; }
+.calc-handle .grip { display: block; width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 8px; }
+.calc-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 14px; }
+.calc-bar .warn, .calc .warn { color: var(--warn); }
+.calc-total b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.calc-total .chev { color: var(--muted); }
+.calc-body { padding: 0 16px 12px; max-height: 50vh; overflow-y: auto; }
+.calc-opts { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.calc-opts select { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 4px 6px; font-size: 13px; }
+.rate { font-size: 12px; color: var(--ok); }
+.rate.stale { color: var(--warn); }
+.calc-note { font-size: 13px; color: var(--warn); margin-bottom: 8px; }
+.calc-subs { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 13px; margin-bottom: 8px; color: var(--muted); }
+.calc-line { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.calc-line .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calc-line .t small { color: var(--muted); }
+.calc-line .a { flex: none; text-align: right; font-variant-numeric: tabular-nums; display: flex; flex-direction: column; }
+.calc-line .a small { color: var(--muted); font-size: 12px; }
+.calc-line .x { color: var(--muted); font-size: 16px; }
+.calc-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; flex-wrap: wrap; }
+
+/* 计算器出现时，按钮和列表都往上让 */
+.fab { bottom: calc(env(safe-area-inset-bottom) + 22px + var(--calc-h, 0px)); }
+.trash-btn { bottom: calc(env(safe-area-inset-bottom) + 30px + var(--calc-h, 0px)); }
+.list { padding-bottom: calc(120px + var(--calc-h, 0px)); }
+.toast { bottom: calc(96px + var(--calc-h, 0px)); }
+
 /* 回收站 */
 .trash-btn {
-  position: fixed; left: 20px; bottom: calc(env(safe-area-inset-bottom) + 30px);
+  position: fixed; left: 20px; bottom: calc(env(safe-area-inset-bottom) + 30px + var(--calc-h, 0px));
   width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line);
   background: var(--card); font-size: 18px; cursor: pointer; padding: 0;
   opacity: .75;
@@ -174,7 +246,7 @@ textarea.input { min-height: 70px; resize: vertical; }
 .btn.danger { background: transparent; color: var(--danger); margin-right: auto; padding-left: 0; }
 
 .toast {
-  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+  position: fixed; left: 50%; bottom: calc(96px + var(--calc-h, 0px)); transform: translateX(-50%);
   background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 999px;
   font-size: 14px; z-index: 20; display: flex; gap: 12px; align-items: center;
   white-space: nowrap; max-width: calc(100% - 32px);
