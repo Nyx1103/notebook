@@ -113,6 +113,8 @@ function render() {
   state.filters = state.filters || {};
   renderTabs();
   renderList();
+  const n = (state.trash || []).length;
+  $('#trashBtn').innerHTML = `🗑${n ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : ''}`;
 }
 
 function renderTabs() {
@@ -141,9 +143,8 @@ function itemRow(it, showBoard) {
     if (it.category) meta.push(`<span class="tag${it.category === (b.categories || [])[0] ? ' need' : ''}">${esc(it.category)}</span>`);
     const p = platform(it.platform);
     if (p?.offline && it.location) meta.push(`<span class="tag">📍${esc(it.location)}</span>`);
-  } else if (it.status === 'custom' && it.customStatus) {
-    meta.push(`<span class="tag custom">${esc(it.customStatus)}</span>`);
   }
+  if (it.status === 'custom' && it.customStatus) meta.unshift(`<span class="tag custom">${esc(it.customStatus)}</span>`);
   if (it.note) meta.push(`<span class="note">${esc(it.note.split('\n')[0])}</span>`);
   return `<div class="item${done ? ' done' : ''}" data-id="${it.id}">
     <button class="check${done ? ' on' : ''}" data-act="toggle" aria-label="${done ? '标为未完成' : '标为完成'}">${done ? '✓' : ''}</button>
@@ -157,9 +158,8 @@ function renderList() {
   const b = board(state.current);
   const all = state.items.filter(i => i.boardId === b.id)
     .sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
-  // 状态筛选：全部 / 未完成 / 已完成（待办还有"自定义状态"）
-  const opts = [{ value: 'all', label: '全部' }, { value: 'undone', label: b.undone }, { value: 'done', label: b.done }];
-  if (b.type === 'todo') opts.push({ value: 'custom', label: '自定义状态' });
+  // 状态筛选：全部 / 未完成 / 已完成 / 自定义状态
+  const opts = [{ value: 'all', label: '全部' }, { value: 'undone', label: b.undone }, { value: 'done', label: b.done }, { value: 'custom', label: '自定义状态' }];
   let f = state.filters[b.id] || 'all';
   if (!opts.some(o => o.value === f)) f = 'all';
   const match = i => f === 'all' || (f === 'undone' ? i.status !== 'done' : i.status === f);
@@ -220,14 +220,13 @@ function editItem(src) {
 
   let fields = `<div class="field"><label>名称</label><input class="input" name="title" value="${esc(it.title)}" placeholder="${b.id === 'places' ? '想去哪里' : b.type === 'shop' ? '要买什么' : '要做什么'}" required autocomplete="off"></div>`;
 
+  // 状态：所有板块都有"自定义"，新建和之后修改都能用
+  fields += `<div class="field"><span class="lbl">状态</span>${chips('status', [{ value: 'undone', label: b.undone }, { value: 'done', label: b.done }, { value: 'custom', label: '自定义' }], it.status || 'undone')}
+    <input class="input" name="customStatus" value="${esc(it.customStatus)}" placeholder="${b.type === 'shop' ? '比如：等降价、已下单在路上' : '写一下现在的进度，比如：等对方回复'}" style="margin-top:8px;${it.status === 'custom' ? '' : 'display:none'}"></div>`;
   if (b.type === 'shop') {
-    fields += `<div class="field"><span class="lbl">状态</span>${chips('status', [{ value: 'undone', label: b.undone }, { value: 'done', label: b.done }], it.status === 'done' ? 'done' : 'undone')}</div>`;
     fields += `<div class="field"><span class="lbl">分类</span>${chips('category', (b.categories || []).map(c => ({ value: c, label: c })), it.category || '').replace('class="chips"', 'class="chips" data-toggle="1"')}</div>`;
     fields += `<div class="field"><span class="lbl">在哪个平台</span>${chips('platform', state.platforms.map(p => ({ value: p.id, html: platBadge(p) + esc(p.name) })), it.platform || '').replace('class="chips"', 'class="chips" data-toggle="1"')}
       <input class="input" name="location" value="${esc(it.location)}" placeholder="线下位置，比如：楼下超市" style="margin-top:8px;${platform(it.platform)?.offline ? '' : 'display:none'}"></div>`;
-  } else {
-    fields += `<div class="field"><span class="lbl">状态</span>${chips('status', [{ value: 'undone', label: b.undone }, { value: 'done', label: b.done }, { value: 'custom', label: '自定义' }], it.status || 'undone')}
-      <input class="input" name="customStatus" value="${esc(it.customStatus)}" placeholder="写一下现在的进度，比如：等对方回复" style="margin-top:8px;${it.status === 'custom' ? '' : 'display:none'}"></div>`;
   }
   fields += `<div class="field"><label>备注</label><textarea class="input" name="note" placeholder="可选">${esc(it.note)}</textarea></div>`;
   if (state.boards.filter(x => x.type === b.type).length > 1) {
@@ -249,10 +248,9 @@ function editItem(src) {
       setTimeout(() => isNew && f.title.focus(), 50);
       const del = f.querySelector('[data-act="del"]');
       if (del) del.onclick = () => {
-        const idx = state.items.findIndex(i => i.id === it.id);
-        const removed = state.items.splice(idx, 1)[0];
-        save(); render(); dlg.close();
-        toast('已删除', () => { state.items.splice(idx, 0, removed); save(); render(); });
+        trashItems([it.id]);
+        dlg.close();
+        toast('已移到回收站', () => { restoreItems([it.id]); });
       };
       f.addEventListener('submit', e => {
         if (e.submitter?.value !== 'ok') return;
@@ -265,10 +263,9 @@ function editItem(src) {
           out.category = val('category');
           out.platform = val('platform');
           out.location = platform(out.platform)?.offline ? f.location.value.trim() : '';
-        } else {
-          out.customStatus = out.status === 'custom' ? f.customStatus.value.trim() : '';
-          if (out.status === 'custom' && !out.customStatus) out.status = 'undone';
         }
+        out.customStatus = out.status === 'custom' ? f.customStatus.value.trim() : '';
+        if (out.status === 'custom' && !out.customStatus) out.status = 'undone';
         if (f.boardId) out.boardId = f.boardId.value;
         if (out.status === 'done' && src.status !== 'done') out.doneAt = Date.now();
         if (out.status !== 'done') out.doneAt = null;
@@ -333,9 +330,9 @@ function editBoard(src) {
         const del = f.querySelector('[data-act="del"]');
         if (del) del.onclick = () => {
           const n = state.items.filter(i => i.boardId === b.id).length;
-          if (!confirm(`删除板块「${b.name}」${n ? `和里面的 ${n} 个事项` : ''}？`)) return;
+          if (!confirm(`删除板块「${b.name}」？${n ? `里面的 ${n} 个事项会放进回收站，恢复时板块也会回来。` : ''}`)) return;
+          trashItems(state.items.filter(i => i.boardId === b.id).map(i => i.id));
           state.boards = state.boards.filter(x => x.id !== b.id);
-          state.items = state.items.filter(i => i.boardId !== b.id);
           save(); render(); dlg.close();
         };
         f.addEventListener('submit', e => {
@@ -355,6 +352,74 @@ function editBoard(src) {
   };
   draw();
 }
+
+/* ========== 回收站：删除的事项先放这里，可以恢复 ========== */
+function trashItems(ids) {
+  state.trash = state.trash || [];
+  const set = new Set(ids);
+  for (const it of state.items.filter(i => set.has(i.id))) {
+    const b = board(it.boardId);
+    state.trash.unshift({ ...it, deletedAt: Date.now(), boardSnap: b ? { ...b } : null });
+  }
+  state.items = state.items.filter(i => !set.has(i.id));
+  save(); render();
+}
+
+function restoreItems(ids) {
+  const set = new Set(ids);
+  const back = (state.trash || []).filter(t => set.has(t.id));
+  for (const t of back) {
+    const { deletedAt, boardSnap, ...it } = t;
+    // 板块被删了就把板块也恢复回来
+    if (!board(it.boardId)) {
+      if (boardSnap) state.boards.push({ ...boardSnap });
+      else it.boardId = state.boards[0].id;
+    }
+    if (!state.items.some(i => i.id === it.id)) state.items.push(it);
+  }
+  state.trash = state.trash.filter(t => !set.has(t.id));
+  save(); render();
+  return back.length;
+}
+
+function trashSheet() {
+  const list = state.trash || [];
+  const when = ts => {
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  openSheet(`<h2>回收站</h2>
+    ${list.length ? `<div class="trash-list">${list.map(t => `
+      <div class="trash-row" data-id="${t.id}">
+        <div class="body"><div class="title">${esc(t.title)}</div>
+          <div class="meta">${esc((board(t.boardId) || t.boardSnap || {}).name || '')} · ${when(t.deletedAt)} 删除</div></div>
+        <button type="button" class="btn small" data-act="restore">恢复</button>
+        <button type="button" class="link x" data-act="purge" aria-label="彻底删除">×</button>
+      </div>`).join('')}</div>`
+      : `<div class="empty" style="padding:30px 0">回收站是空的</div>`}
+    <div class="actions">${list.length ? '<button type="button" class="btn danger" data-act="empty">清空回收站</button><button type="button" class="btn" data-act="all">全部恢复</button>' : ''}
+      <button class="btn" value="cancel">关闭</button></div>`,
+    f => {
+      f.querySelectorAll('.trash-row').forEach(row => {
+        row.querySelector('[data-act="restore"]').onclick = () => { restoreItems([row.dataset.id]); toast('已恢复'); trashSheet(); };
+        row.querySelector('[data-act="purge"]').onclick = () => {
+          if (!confirm('彻底删除后就找不回来了，确定吗？')) return;
+          state.trash = state.trash.filter(t => t.id !== row.dataset.id);
+          save(); render(); trashSheet();
+        };
+      });
+      const all = f.querySelector('[data-act="all"]');
+      if (all) all.onclick = () => { const n = restoreItems(list.map(t => t.id)); toast(`已恢复 ${n} 条`); trashSheet(); };
+      const empty = f.querySelector('[data-act="empty"]');
+      if (empty) empty.onclick = () => {
+        if (!confirm(`彻底删除回收站里的 ${list.length} 条？删除后就找不回来了。`)) return;
+        state.trash = [];
+        save(); render(); trashSheet();
+      };
+    });
+}
+
+$('#trashBtn').onclick = trashSheet;
 
 /* ========== 备份：导出成文件 / 从文件导入（用来在电脑和手机之间搬数据） ========== */
 function dataSheet() {
