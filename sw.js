@@ -1,5 +1,5 @@
 // 离线缓存：第一次打开后，断网也能用
-const CACHE = 'notebook-v7';
+const CACHE = 'notebook-v8';
 const FILES = ['./', 'index.html', 'style.css', 'money.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

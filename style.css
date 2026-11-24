@@ -181,6 +181,43 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .list { padding-bottom: calc(120px + var(--calc-h, 0px)); }
 .toast { bottom: calc(96px + var(--calc-h, 0px)); }
 
+/* 批量整理 */
+.batch-head b { color: var(--text); }
+.link.strong { font-weight: 600; }
+.bsel {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; border: 2px dashed var(--muted);
+  background: transparent; color: var(--bg); cursor: pointer; padding: 0; font-size: 13px;
+  display: grid; place-items: center;
+}
+.bsel.on { background: var(--text); border: 2px solid var(--text); }
+.item.bpicked { background: var(--accent-soft); border-color: var(--text); }
+.batchbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 8; margin: 0 auto; max-width: 760px;
+  background: var(--card); border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 16px 16px 0 0; box-shadow: 0 -6px 20px rgba(0,0,0,.10);
+  padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px);
+}
+.batchbar[hidden] { display: none; }
+.batch-acts { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.batch-acts::-webkit-scrollbar { display: none; }
+.bact {
+  flex: 1 1 0; min-width: 0; border: 1px solid var(--line); background: var(--bg); border-radius: 10px;
+  padding: 9px 4px; cursor: pointer; font-size: 14px; white-space: nowrap;
+}
+body.batching .fab, body.batching .trash-btn { display: none; }
+.bact.danger { color: var(--danger); }
+.bact:disabled { opacity: .4; cursor: default; }
+.batch-tip { text-align: center; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.sheet h2 .sub { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+.pick-list { display: flex; flex-direction: column; gap: 6px; max-height: 55vh; overflow-y: auto; }
+.pick {
+  display: flex; align-items: center; gap: 8px; text-align: left;
+  border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 11px 14px; cursor: pointer;
+}
+.pick small { color: var(--muted); }
+.pick:hover { border-color: var(--accent); }
+.btn.danger-fill { background: var(--danger); }
+
 /* 回收站 */
 .trash-btn {
   position: fixed; left: 20px; bottom: calc(env(safe-area-inset-bottom) + 30px + var(--calc-h, 0px));

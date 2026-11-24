@@ -64,6 +64,8 @@ function fixState(s) {
 }
 let state = fixState(load());
 let calcMode = false; // "选择计算"模式只在这次打开期间有效
+let batch = null;      // "整理"模式：{ boardId, sel: Set }，只在这次打开期间有效，和勾选、计算选择都分开
+let visibleIds = [];   // 当前筛选下看得到的事项（给"全选"用）
 
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); }
@@ -124,9 +126,12 @@ function platBadge(p) {
 function render() {
   if (!board(state.current)) state.current = state.boards[0].id;
   state.filters = state.filters || {};
+  if (batch && batch.boardId !== state.current) batch = null;
+  if (batch) for (const id of [...batch.sel]) if (!state.items.some(i => i.id === id && i.boardId === batch.boardId)) batch.sel.delete(id);
   renderTabs();
   renderList();
   renderCalc();
+  renderBatch();
   const n = (state.trash || []).length;
   $('#trashBtn').innerHTML = `🗑${n ? `<span class="badge">${n > 99 ? '99+' : n}</span>` : ''}`;
 }
@@ -144,6 +149,7 @@ $('#tabs').addEventListener('click', e => {
   if (e.target.closest('#addBoard')) return editBoard(null);
   const t = e.target.closest('.tab');
   if (!t) return;
+  if (t.dataset.id !== state.current) batch = null; // 换板块就退出整理
   state.current = t.dataset.id;
   save(); render();
 });
@@ -165,12 +171,38 @@ function itemRow(it, showBoard) {
   const picked = shop && state.calc.sel.includes(it.id);
   const price = shop && Number.isInteger(it.price)
     ? `<span class="price">${fmtMoney(it.price, it.currency || state.lastCurrency)}${(it.qty || 1) > 1 ? `<small>×${it.qty}</small>` : ''}</span>` : '';
-  return `<div class="item${done ? ' done' : ''}${picked ? ' picked' : ''}" data-id="${it.id}">
+  const bOn = batch && batch.sel.has(it.id);
+  return `<div class="item${done ? ' done' : ''}${picked && !batch ? ' picked' : ''}${bOn ? ' bpicked' : ''}" data-id="${it.id}">
     <button class="check${done ? ' on' : ''}" data-act="toggle" aria-label="${done ? '标为未完成' : '标为完成'}">${done ? '✓' : ''}</button>
     <div class="body"><div class="title">${esc(it.title)}</div>${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}</div>
     ${price}${shop ? platBadge(platform(it.platform)) : ''}
-    ${shop && calcMode ? `<button class="selbox${picked ? ' on' : ''}" data-act="sel" aria-label="${picked ? '不参与计算' : '参与计算'}">${picked ? '✓' : ''}</button>` : ''}
+    ${shop && calcMode && !batch ? `<button class="selbox${picked ? ' on' : ''}" data-act="sel" aria-label="${picked ? '不参与计算' : '参与计算'}">${picked ? '✓' : ''}</button>` : ''}
+    ${batch ? `<button class="bsel${bOn ? ' on' : ''}" data-act="bsel" aria-label="${bOn ? '取消选择' : '选择'}">${bOn ? '✓' : ''}</button>` : ''}
   </div>`;
+}
+
+// 板块标题行：平时是"整理 / 备份 / 编辑板块"，整理时变成"全选 / 完成"
+function headHtml(b, n) {
+  if (batch) {
+    const allOn = visibleIds.length && visibleIds.every(id => batch.sel.has(id));
+    return `<div class="board-head batch-head"><span>整理中 · 已选 <b>${batch.sel.size}</b> 项</span><span>
+      <button class="link" id="bAll">${allOn ? '取消全选' : '全选'}</button><button class="link strong" id="bDone">完成</button></span></div>`;
+  }
+  return `<div class="board-head"><span>${n} 项</span><span><button class="link" id="batchBtn">整理</button><button class="link" id="dataBtn">备份</button><button class="link" id="editBoard">编辑板块</button></span></div>`;
+}
+function bindHead(b) {
+  if (batch) {
+    $('#bAll').onclick = () => {
+      const allOn = visibleIds.every(id => batch.sel.has(id));
+      visibleIds.forEach(id => allOn ? batch.sel.delete(id) : batch.sel.add(id));
+      render();
+    };
+    $('#bDone').onclick = () => { batch = null; render(); };
+    return;
+  }
+  $('#batchBtn').onclick = () => { batch = { boardId: b.id, sel: new Set() }; calcMode = false; render(); };
+  $('#editBoard').onclick = () => editBoard(b);
+  $('#dataBtn').onclick = dataSheet;
 }
 
 /* 购物板块的筛选：分类 + 购买状态（直接读取原来的勾选状态，不另存一套） */
@@ -197,22 +229,24 @@ function renderShopList(el, b, all) {
   const stOpts = [['all', '全部状态'], ['undone', b.undone], ['done', b.done], ['custom', '自定义状态']].map(([v, l]) =>
     `<option value="${v}"${v === f.status ? ' selected' : ''}>${esc(l)}（${inKind.filter(i => statusMatch(i, v)).length}）</option>`).join('');
 
-  el.innerHTML = `<div class="board-head"><span>${all.length} 项</span><span><button class="link" id="dataBtn">备份</button><button class="link" id="editBoard">编辑板块</button></span></div>
+  visibleIds = list.map(i => i.id);
+  el.innerHTML = headHtml(b, all.length) + `
     <div class="toolbar">
       <label class="pill${f.kind !== 'all' ? ' on' : ''}"><select id="kindSel" aria-label="购物分类">${kindOpts}</select></label>
       <label class="pill${f.status !== 'all' ? ' on' : ''}"><select id="statusSel" aria-label="购买状态">${stOpts}</select></label>
-      <button type="button" class="pill calc-toggle${calcMode ? ' on' : ''}" id="calcMode">${calcMode ? '完成选择' : '🧮 计算'}</button>
+      ${batch ? '' : `<button type="button" class="pill calc-toggle${calcMode ? ' on' : ''}" id="calcMode">${calcMode ? '完成选择' : '🧮 计算'}</button>`}
     </div>
-    ${calcMode ? `<div class="hint">点商品选它参与金额计算（右边方框）。左边圆圈还是"${esc(b.done)}"，两个互不影响。</div>` : ''}` +
+    ${batch ? `<div class="hint">点事项选中，可以先用上面的筛选再"全选"。下面选要做的操作，改错了能撤销。</div>` : ''}
+    ${calcMode && !batch ? `<div class="hint">点商品选它参与金额计算（右边方框）。左边圆圈还是"${esc(b.done)}"，两个互不影响。</div>` : ''}` +
     (list.length ? list.map(i => itemRow(i)).join('')
       : all.length ? `<div class="empty">这个筛选下没有商品</div>`
       : `<div class="empty"><b>＋</b>点右下角的按钮添加事项</div>`);
-  $('#editBoard').onclick = () => editBoard(b);
-  $('#dataBtn').onclick = dataSheet;
-  const setF = patch => { state.shopFilter[b.id] = { ...f, ...patch }; save(); renderList(); };
+  bindHead(b);
+  const setF = patch => { state.shopFilter[b.id] = { ...f, ...patch }; save(); render(); };
   $('#kindSel').onchange = e => setF({ kind: e.target.value });
   $('#statusSel').onchange = e => setF({ status: e.target.value });
-  $('#calcMode').onclick = () => { calcMode = !calcMode; renderList(); };
+  const cm = $('#calcMode');
+  if (cm) cm.onclick = () => { calcMode = !calcMode; renderList(); };
 }
 
 function renderList() {
@@ -229,19 +263,19 @@ function renderList() {
   const list = all.filter(match);
   const count = v => v === 'all' ? all.length : all.filter(i => v === 'undone' ? i.status !== 'done' : i.status === v).length;
 
-  el.innerHTML = `<div class="board-head"><span>${all.length} 项</span><span><button class="link" id="dataBtn">备份</button><button class="link" id="editBoard">编辑板块</button></span></div>
+  visibleIds = list.map(i => i.id);
+  el.innerHTML = headHtml(b, all.length) + `
     <div class="chips filter" id="filter">${opts.map(o =>
       `<button type="button" class="chip${o.value === f ? ' on' : ''}" data-v="${o.value}">${esc(o.label)}<span class="n">${count(o.value)}</span></button>`).join('')}</div>` +
     (list.length ? list.map(i => itemRow(i)).join('')
       : all.length ? `<div class="empty">这个筛选下没有事项</div>`
       : `<div class="empty"><b>＋</b>点右下角的按钮添加事项</div>`);
-  $('#editBoard').onclick = () => editBoard(b);
-  $('#dataBtn').onclick = dataSheet;
+  bindHead(b);
   $('#filter').onclick = e => {
     const c = e.target.closest('.chip');
     if (!c) return;
     state.filters[b.id] = c.dataset.v;
-    save(); renderList();
+    save(); render();
   };
 }
 
@@ -250,6 +284,12 @@ $('#list').addEventListener('click', e => {
   if (!row) return;
   const it = state.items.find(i => i.id === row.dataset.id);
   if (!it) return;
+  // 整理模式：点哪里都只是选中，不会改状态（圆圈也不会被误点成完成）
+  if (batch) {
+    batch.sel.has(it.id) ? batch.sel.delete(it.id) : batch.sel.add(it.id);
+    render();
+    return;
+  }
   if (e.target.closest('[data-act="toggle"]')) {
     const prev = { status: it.status, doneAt: it.doneAt };
     const b = board(it.boardId);
@@ -503,6 +543,7 @@ function renderCalc() {
   const alive = state.calc.sel.filter(id => state.items.some(i => i.id === id));
   if (alive.length !== state.calc.sel.length) { state.calc.sel = alive; save(); }
   const onShop = board(state.current)?.type === 'shop';
+  if (batch) { el.hidden = true; return; } // 整理时让位给整理工具栏
   if (!alive.length || !onShop) {
     el.hidden = true;
     document.documentElement.style.setProperty('--calc-h', '0px');
@@ -588,6 +629,87 @@ function bindDrag(handle, onTap, onSwipe) {
 }
 
 window.addEventListener('online', () => { if (state.calc.sel.length) refreshRates(true).then(renderCalc); });
+
+/* ========== 批量整理：底部工具栏 + 各种批量操作（都能撤销） ========== */
+function renderBatch() {
+  const el = $('#batchbar');
+  if (!batch) { el.hidden = true; document.body.classList.remove('batching'); return; }
+  const b = board(batch.boardId);
+  const n = batch.sel.size;
+  const shop = b.type === 'shop';
+  const acts = [['status', '状态'], ...(shop ? [['kind', '分类'], ['need', '必要性'], ['plat', '平台']] : []), ['move', '移动'], ['del', '删除']];
+  document.body.classList.add('batching');
+  el.hidden = false;
+  el.innerHTML = `<div class="batch-acts">${acts.map(([k, l]) =>
+    `<button type="button" class="bact${k === 'del' ? ' danger' : ''}" data-k="${k}"${n ? '' : ' disabled'}>${l}</button>`).join('')}</div>
+    ${n ? '' : '<div class="batch-tip">先点上面的事项选中</div>'}`;
+  el.querySelectorAll('.bact').forEach(x => x.onclick = () => batchAction(x.dataset.k));
+  document.documentElement.style.setProperty('--calc-h', el.offsetHeight + 'px');
+}
+
+// 改之前先存一份，撤销时按 id 还原
+function applyBatch(label, fn) {
+  const ids = [...batch.sel];
+  const snap = ids.map(id => JSON.parse(JSON.stringify(state.items.find(i => i.id === id))));
+  for (const id of ids) fn(state.items.find(i => i.id === id));
+  save(); render(); dlg.close();
+  toast(`${ids.length} 项${label}`, () => {
+    for (const s of snap) { const i = state.items.find(x => x.id === s.id); if (i) { for (const k of Object.keys(i)) delete i[k]; Object.assign(i, s); } }
+    save(); render();
+  });
+}
+
+function batchAction(k) {
+  const b = board(batch.boardId);
+  const n = batch.sel.size;
+  const head = t => `<h2>${t}<small class="sub">已选 ${n} 项</small></h2>`;
+  const footer = `<div class="actions"><button class="btn" value="cancel">取消</button></div>`;
+  const pick = (title, options, onPick, extra = '') => openSheet(head(title) +
+    `<div class="pick-list">${options.map((o, i) => `<button type="button" class="pick" data-i="${i}">${o.html ?? esc(o.label)}</button>`).join('')}</div>${extra}${footer}`,
+    f => f.querySelectorAll('.pick').forEach(x => x.onclick = () => onPick(options[+x.dataset.i], f)));
+
+  if (k === 'status') {
+    pick('改状态', [{ v: 'undone', label: b.undone }, { v: 'done', label: b.done }, { v: 'custom', label: '自定义…' }], (o, f) => {
+      if (o.v === 'custom') {
+        const box = f.querySelector('#bCustom');
+        box.hidden = false; box.querySelector('input').focus();
+        return;
+      }
+      applyBatch(`改为「${o.label}」`, i => {
+        if (o.v === 'done' && i.status !== 'done') i.doneAt = Date.now();
+        if (o.v !== 'done') i.doneAt = null;
+        i.status = o.v; i.customStatus = '';
+      });
+    }, `<div class="row" id="bCustom" hidden style="margin-top:10px"><input class="input" placeholder="自定义状态，比如：等降价"><button type="button" class="btn primary" id="bCustomOk">确定</button></div>`);
+    $('#bCustomOk').onclick = () => {
+      const v = $('#bCustom input').value.trim();
+      if (!v) return;
+      applyBatch(`改为「${v}」`, i => { i.status = 'custom'; i.customStatus = v; i.doneAt = null; });
+    };
+  } else if (k === 'kind') {
+    pick('改购物分类', [...(b.kinds || []).map(x => ({ v: x, label: x })), { v: '', label: '未分类' }],
+      o => applyBatch(`分类改为「${o.label}」`, i => { i.kind = o.v; }));
+  } else if (k === 'need') {
+    pick('改必要程度', [...(b.categories || []).map(x => ({ v: x, label: x })), { v: '', label: '不设置' }],
+      o => applyBatch(`改为「${o.label}」`, i => { i.category = o.v; }));
+  } else if (k === 'plat') {
+    pick('改平台', [...state.platforms.map(p => ({ v: p.id, label: p.name, html: platBadge(p) + esc(p.name) })), { v: '', label: '不设置' }],
+      o => applyBatch(`平台改为「${o.label}」`, i => { i.platform = o.v; if (!platform(o.v)?.offline) i.location = ''; }));
+  } else if (k === 'move') {
+    const others = state.boards.filter(x => x.id !== b.id);
+    if (!others.length) return toast('没有别的板块可以移');
+    pick('移到哪个板块', others.map(x => ({ v: x.id, label: x.name, html: `${x.icon || (x.type === 'shop' ? '🛒' : '☑︎')} ${esc(x.name)}<small> ${TYPE_NAME[x.type]}</small>` })),
+      o => applyBatch(`已移到「${o.label}」`, i => { i.boardId = o.v; }));
+  } else if (k === 'del') {
+    const ids = [...batch.sel];
+    openSheet(head('删除') + `<p>这 ${ids.length} 项会放进回收站，之后还能恢复。</p>
+      <div class="actions"><button class="btn" value="cancel">取消</button><button type="button" class="btn primary danger-fill" id="bDel">删除</button></div>`,
+      f => f.querySelector('#bDel').onclick = () => {
+        trashItems(ids); dlg.close();
+        toast(`${ids.length} 项已移到回收站`, () => restoreItems(ids));
+      });
+  }
+}
 
 /* ========== 回收站：删除的事项先放这里，可以恢复 ========== */
 function trashItems(ids) {
